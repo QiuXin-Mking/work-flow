@@ -1,0 +1,38 @@
+name: pi-bugfix
+services:
+  api:
+    image: pi-bugfix-backend:1.0
+    build: ./backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_PATH: /data/jobs.sqlite
+      REPOS_CONFIG: /app/repos.json
+    volumes:
+      - pi-bugfix-data:/data
+      - ./repos.json:/app/repos.json:ro
+  worker:
+    image: pi-bugfix-backend:1.0
+    restart: unless-stopped
+    command: ["python3", "-m", "app.worker"]
+    env_file: .env
+    environment:
+      DATABASE_PATH: /data/jobs.sqlite
+      REPOS_CONFIG: /app/repos.json
+      WORKSPACE_ROOT: /data/attempts
+      RUNNER_IMAGE: pi-bugfix-backend:1.0
+      DATA_VOLUME: pi-bugfix-data
+    volumes:
+      - pi-bugfix-data:/data
+      - ./repos.json:/app/repos.json:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on: [api]
+  web:
+    build: ./frontend
+    restart: unless-stopped
+    ports:
+      - "8090:80"
+    depends_on: [api]
+volumes:
+  pi-bugfix-data:
+    name: pi-bugfix-data

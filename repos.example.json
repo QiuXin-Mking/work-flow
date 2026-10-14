@@ -1,0 +1,12 @@
+{
+  "neptune-robotics/voyager_server": {
+    "target_branch": "dev",
+    "project_keys": ["neptune_software_system"],
+    "keywords": ["后端", "API", "服务端"]
+  },
+  "neptune-robotics/operations-dashboard": {
+    "target_branch": "dev",
+    "project_keys": ["neptune_software_system"],
+    "keywords": ["前端", "管理台", "页面"]
+  }
+}
