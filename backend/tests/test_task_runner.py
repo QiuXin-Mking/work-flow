@@ -6,6 +6,7 @@ import subprocess
 import sys
 
 from app.task_runner import run_attempt, run_check, validate_manifest
+from app.trellis_context import prepare_trellis_context
 
 
 def test_reproduction_must_fail_before_and_pass_after(tmp_path: Path):
@@ -26,6 +27,21 @@ def test_manifest_requires_every_repo_and_argv_commands():
         assert False
     except ValueError:
         pass
+
+
+def test_trellis_context_is_attempt_local_and_selects_relevant_specs(tmp_path: Path):
+    context = prepare_trellis_context(tmp_path, {"title": "bug", "description": "external data"},
+                                      ["neptune-robotics/voyager_server"])
+    assert (tmp_path / ".trellis" / "tasks" / "bugfix" / "prd.md").exists()
+    assert "Backend context" in context["implement"]
+    assert "Frontend context" not in context["implement"]
+    assert "external data" not in context["implement"]
+    assert "independent Trellis check subagent" in context["verify"]
+    assert not list((tmp_path / ".trellis").rglob("*-system.md"))
+    assert "backend/error-handling.md" in context["implement"]
+    assert "frontend/type-safety.md" not in context["implement"]
+    manifest = tmp_path / ".trellis" / "tasks" / "bugfix" / "implement.jsonl"
+    assert "backend/error-handling.md" in manifest.read_text(encoding="utf-8")
 
 
 def test_attempt_needs_real_before_failure_and_fresh_verification(tmp_path: Path):
@@ -50,7 +66,11 @@ for line in sys.stdin.buffer:
     cmd = json.loads(line.decode("utf-8"))
     if cmd["type"] != "prompt":
         continue
-    if "独立验证会话" in cmd["message"]:
+    if "独立取证与定位 subagent" in cmd["message"]:
+        (root / "diagnosis.json").write_text(json.dumps({
+            "root_cause": "wrong value", "evidence": "fixed.txt has broken",
+            "plan": "write fixed", "repositories": ["acme/api"]}))
+    elif "独立验证会话" in cmd["message"]:
         (root / "verification.json").write_text(json.dumps({"verified": True, "reason": "checked"}))
     else:
         (root / "repos" / "acme__api" / "fixed.txt").write_text("fixed")
@@ -65,3 +85,5 @@ for line in sys.stdin.buffer:
         "pi_command": [sys.executable, str(fake)], "pi_timeout": 3}))
     assert result["reproduced"] and result["verified"]
     assert result["candidate"]["acme/api"]["tree_id"]
+    assert (root / ".trellis" / "tasks" / "bugfix" / "research" / "diagnosis.json").exists()
+    assert (root / ".trellis" / "tasks" / "bugfix" / "research" / "verification.json").exists()

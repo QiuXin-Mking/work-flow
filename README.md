@@ -9,7 +9,8 @@
 - `frontend/`：React 工作台。任务列表、工单预览、仓库确认、实时进度、证据、审核、PR。
 - `backend/app/api.py`：FastAPI 控制面和本地账号；SQLite 保存任务、事件、租约、候选、审核及交付。
 - `backend/app/worker.py`：单 worker 领取任务、预克隆仓库、启动一次性 Pi 容器，读取结构化结果；另轮询已批准候选做 PR 交付。
-- `backend/app/task_runner.py`：主 Pi RPC 会话修复；在原始目标提交执行复现命令并要求失败；另起独立 Pi RPC 会话验证；在候选树执行同一命令并要求通过；冻结每仓树 ID。
+- `backend/app/task_runner.py`：按 Trellis 阶段启动独立 Pi RPC 会话定位、实施和验证；在原始目标提交执行复现命令并要求失败；在候选树执行同一命令并要求通过；冻结每仓树 ID。
+- `backend/trellis_bundle/`：从本机 Trellis 实践中筛选出的团队规范快照，包含工作流、通用检查、前后端关注点。每次运行生成独立的 `.trellis/tasks/bugfix/` 工件，按角色从只读镜像生成系统上下文；飞书工单正文仅作为不可信任务数据传给 Pi。团队版不包含本机 `.trellis/workspace/`、个人环境约定或 SOP 资料。见 [Trellis 接入说明](docs/trellis-integration.md)。
 - `backend/app/delivery.py`：审核绑定候选树和目标 SHA，创建各仓 Draft PR，全部完成才转 Ready；部分失败保留 WIP 并可重试。
 
 ## 部署到 Docker 主机
