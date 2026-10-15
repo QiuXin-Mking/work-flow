@@ -71,8 +71,8 @@ def create_app(store: Store, feishu: FeishuClient,
         try:
             return feishu.get_bug(ref)
         except ValueError as exc:
-            if "credentials" in str(exc):
-                raise HTTPException(503, "飞书项目凭据尚未配置") from exc
+            if "credentials" in str(exc) or "MCP authorization" in str(exc):
+                raise HTTPException(503, "飞书项目 MCP 授权尚未完成或已过期") from exc
             raise HTTPException(502, f"飞书工单内容不可用：{exc}") from exc
         except Exception as exc:
             raise HTTPException(502, f"飞书工单读取失败：{type(exc).__name__}") from exc

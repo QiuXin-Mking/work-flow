@@ -15,15 +15,16 @@
 
 ## 部署到 Docker 主机
 
-1. 在 42 机编辑 `/opt/pi-bugfix-console/.env`，填入飞书项目插件 ID/Secret/User Key、GitHub 只读克隆 token 和可创建分支/PR 的写 token。文件已按 `600` 权限创建；不要提交它。
+1. 在 42 机编辑 `/opt/pi-bugfix-console/.env`，填入 GitHub 只读克隆 token 和可创建分支/PR 的写 token；飞书项目默认通过 MCP 设备授权，不需要 Plugin ID/Secret/User Key。文件已按 `600` 权限创建；不要提交它。
 2. 复制 `repos.example.json` 为 `repos.json`，把仓库 ID、目标分支、飞书项目 key、推荐关键词改为真实值。仓库 ID 是 `owner/repo`；必须有读取和 PR 权限。
 3. 主机已有可供 Pi 1.1.0 读取的模型认证 Docker volume `pi-config`。一次性 Pi 容器只读挂载原卷，并把配置复制到容器内临时可写目录，供 Pi 创建锁文件；任务代码目录为单独 bind mount，不能访问其他 attempt 工作树。
 4. `docker compose build`，然后 `docker compose up -d`。Web 默认监听主机 `8090`。生产入口若经 HTTPS 反代，应把登录 cookie 的 `secure` 设置为 true 并限制来源。
 5. 为 5 位使用者分别建本地账号：`docker compose exec api python3 -m app.cli add-user <用户名>`，逐个输入密码。
+6. 在 42 机运行 `docker compose exec api python3 -m app.feishu_mcp_auth`，打开输出的飞书地址并批准一次性代码。授权存放于服务数据卷，续期由后端完成。详见 [飞书适配说明](backend/FEISHU.md)。
 
 42 机宿主已安装 `gh` 2.97.0，供人工检查 PR 使用。自动交付使用后端的 GitHub REST/GraphQL 客户端；不依赖 `gh auth` 会话。
 
-服务端不使用飞书组织账号登录。飞书工单读取固定指向 `project.feishu.cn` 官方 OpenAPI，不请求用户粘贴的原始 URL。现仅提取基础字段及描述，真实租户字段与凭据仍需实测，见 [飞书适配说明](backend/FEISHU.md)。
+服务端不使用飞书组织账号登录工作台。飞书工单读取固定指向 `project.feishu.cn` 官方 MCP，不请求用户粘贴的原始 URL。后端使用独立的飞书项目授权取单，Pi 仍禁用 MCP，只接收脱敏后的工单快照。现提取基础字段及描述，评论和附件暂未纳入，见 [飞书适配说明](backend/FEISHU.md)。
 
 用户提供的 `neptune_software_system/issue/detail/7128390467` 已经由飞书只读连接器确认处于“已修复”状态，可用于取单预览验收；服务会阻止对它创建新的修复任务。真实自动修复与 PR 验收还需一条未解决、允许测试的 Bug。
 

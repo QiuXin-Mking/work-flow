@@ -6,14 +6,17 @@ from pathlib import Path
 
 from .api import create_app
 from .feishu import FeishuClient, WorkItemRef, BugSnapshot
+from .feishu_mcp import FeishuMcpClient
 from .store import Store
 
 
 class LazyFeishu:
-    """Keep the login UI available while an operator installs API credentials."""
+    """Keep the login UI available until the service has Feishu authorization."""
 
     def get_bug(self, ref: WorkItemRef) -> BugSnapshot:
-        return FeishuClient().get_bug(ref)
+        if os.getenv("FEISHU_SOURCE", "mcp") == "plugin":
+            return FeishuClient().get_bug(ref)
+        return FeishuMcpClient().get_bug(ref)
 
 
 repos = json.loads(Path(os.environ.get("REPOS_CONFIG", "/app/repos.json")).read_text(encoding="utf-8"))
