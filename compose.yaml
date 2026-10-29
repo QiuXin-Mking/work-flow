@@ -20,18 +20,24 @@ services:
       DATABASE_PATH: /data/jobs.sqlite
       REPOS_CONFIG: /app/repos.json
       WORKSPACE_ROOT: /data/attempts
+      DIAG_SSH_USER: neptune
+      DIAG_SSH_KEY_PATH: /run/ssh74/id_ed25519
+      DIAG_SSH_KNOWN_HOSTS: /run/ssh74/known_hosts
+      DIAG_LOG_QUERY_PROGRAM: /home/neptune/.local/libexec/pi-bugfix-query-logs
+      GIT_HTTP_PROXY: ${GIT_HTTP_PROXY:-http://192.168.2.78:7997}
       RUNNER_IMAGE: pi-bugfix-backend:1.0
       DATA_VOLUME: pi-bugfix-data
     volumes:
       - pi-bugfix-data:/data
       - ./repos.json:/app/repos.json:ro
       - /var/run/docker.sock:/var/run/docker.sock
+      - ./ssh74:/run/ssh74:ro
     depends_on: [api]
   web:
     build: ./frontend
     restart: unless-stopped
     ports:
-      - "8090:80"
+      - "80:80"
     depends_on: [api]
 volumes:
   pi-bugfix-data:

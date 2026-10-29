@@ -24,7 +24,10 @@ def _password_hash(password: str, salt: bytes | None = None) -> str:
     return f"{salt.hex()}:{digest.hex()}"
 
 
-class Store:
+from .workflow import WorkflowStore
+
+
+class Store(WorkflowStore):
     def __init__(self, path: str | Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -60,6 +63,8 @@ class Store:
                     candidate_id TEXT PRIMARY KEY, status TEXT NOT NULL,
                     prs_json TEXT NOT NULL, updated_at REAL NOT NULL);
             """)
+
+            self._workflow_schema(db)
 
     @contextmanager
     def _db(self) -> Iterator[sqlite3.Connection]:
@@ -134,6 +139,7 @@ class Store:
                  json.dumps(snapshot) if snapshot is not None else None, now, now))
             db.execute("INSERT INTO events(job_id,kind,payload_json,created_at) VALUES(?,?,?,?)",
                        (job_id, "created", "{}", now))
+        self.ensure_workflow(job_id)
         return job_id
 
     def _decode_job(self, row: sqlite3.Row | None) -> dict[str, Any] | None:
@@ -142,6 +148,7 @@ class Store:
         job = dict(row)
         job["repo_ids"] = json.loads(job["repo_ids"])
         job["snapshot"] = json.loads(job.pop("snapshot_json")) if job["snapshot_json"] else None
+        job["workflow"] = self.get_workflow(job["id"])
         return job
 
     def get_job(self, job_id: str) -> dict[str, Any] | None:
@@ -153,6 +160,39 @@ class Store:
             if not db.execute("SELECT 1 FROM users WHERE id=? AND active=1", (viewer_id,)).fetchone():
                 return []
             return [self._decode_job(row) for row in db.execute("SELECT * FROM jobs ORDER BY created_at DESC")]
+
+    def retry_job(self, job_id: str, user_id: str) -> bool:
+        """Atomically requeue a terminal attempt and fence every previous worker."""
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if row is None:
+                raise KeyError(job_id)
+            if row["created_by"] != user_id:
+                raise PermissionError("only the creator may retry")
+            if row["status"] not in ("failed", "cancelled", "unreproduced", "diagnosis_only"):
+                return False
+            workflow = self._load_workflow(db, job_id)
+            if workflow:
+                from .workflow import initial
+                fresh = initial(json.loads(row['snapshot_json'] or '{}'), workflow['snapshot_version'])
+                fresh['revision'] = workflow['revision'] + 1
+                fresh['input'] = workflow['input']
+                fresh['source_snapshot_version'] = workflow.get('source_snapshot_version', 1)
+                saved = db.execute('SELECT snapshot_json FROM job_snapshots WHERE job_id=? AND version=?', (job_id, workflow['snapshot_version'])).fetchone()
+                if saved:
+                    from .workflow import digest
+                    fresh['snapshot_hash'] = digest(json.loads(saved[0]))
+                self._write_workflow(db, job_id, fresh)
+            now = time.time()
+            db.execute("""UPDATE jobs SET status='queued',error=NULL,candidate_id=NULL,
+                lease_epoch=lease_epoch+1,lease_owner=NULL,lease_expires=NULL,updated_at=?
+                WHERE id=?""", (now, job_id))
+            db.execute("UPDATE attempts SET status=? WHERE job_id=? AND status='running'",
+                       (row["status"], job_id))
+            db.execute("INSERT INTO events(job_id,kind,payload_json,created_at) VALUES(?,?,?,?)",
+                       (job_id, "retry", json.dumps({"message": "任务已重新排队", "requested_by": user_id}), now))
+            return True
 
     def claim_next_job(self, owner: str, *, now: float | None = None,
                        lease_seconds: int = 60) -> dict[str, Any] | None:
@@ -223,6 +263,13 @@ class Store:
     def save_candidate(self, job_id: str, repos: dict[str, Any], *, reproduced: bool = True,
                        verified: bool = True, attempt_id: str | None = None,
                        epoch: int | None = None) -> str:
+        workflow=self.get_workflow(job_id)
+        if workflow and not workflow["ready_for_implementation"]:
+            raise ValueError("PRD 未通过双重收敛审查")
+        if workflow:
+            job = self.get_job(job_id)
+            if not repos or not set(repos) <= set(job["repo_ids"]):
+                raise ValueError("候选仓库不在分析范围内")
         if not reproduced or not verified:
             raise ValueError("reproduction and verification required")
         candidate_id = _new_id()
@@ -256,6 +303,9 @@ class Store:
 
     def approve_candidate(self, job_id: str, candidate_id: str, reviewer_id: str) -> bool:
         from .review import approve_candidate
+
+        if not self.workflow_implementation_ready(job_id):
+            return False
 
         try:
             approve_candidate(self, job_id, candidate_id, reviewer_id)
@@ -293,11 +343,11 @@ class Store:
 
     def next_approved_candidate(self) -> str | None:
         with self._db() as db:
-            row = db.execute("""SELECT a.candidate_id FROM approvals a
+            rows = db.execute("""SELECT a.candidate_id,c.job_id FROM approvals a
                 JOIN candidates c ON c.id=a.candidate_id
                 JOIN jobs j ON j.candidate_id=c.id
                 LEFT JOIN deliveries d ON d.candidate_id=c.id
                 WHERE j.status IN ('review_ready','delivery_wip')
                     AND (d.status IS NULL OR d.status='delivery_wip')
-                ORDER BY a.created_at LIMIT 1""").fetchone()
-            return row["candidate_id"] if row else None
+                ORDER BY a.created_at""").fetchall()
+            return next((row["candidate_id"] for row in rows if self.workflow_implementation_ready(row["job_id"])), None)

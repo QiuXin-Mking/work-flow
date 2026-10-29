@@ -10,6 +10,11 @@ def test_parse_only_exact_feishu_issue_detail_url() -> None:
     assert ref == WorkItemRef("team_1", "123456")
     assert parse_bug_url("https://project.feishu.cn/neptune_software_system/issue/detail/7128390467") == WorkItemRef(
         "neptune_software_system", "7128390467")
+    shared_url = ("https://project.feishu.cn/neptune_software_system/issue/detail/7101461494"
+                  "?parentUrl=&openScene=2&tabKey=detail#detail")
+    shared_ref = parse_bug_url(shared_url)
+    assert shared_ref == WorkItemRef("neptune_software_system", "7101461494")
+    assert shared_ref.source_url == "https://project.feishu.cn/neptune_software_system/issue/detail/7101461494"
 
     for bad in (
         "http://project.feishu.cn/team_1/issue/detail/123456",

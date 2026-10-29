@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 import re
 from typing import Any
 
@@ -15,11 +16,11 @@ from .feishu_mcp_auth import MCP_URL, OAuthStore, ServiceOAuth
 _LOG_SUFFIX = re.compile(r"log_id:\s*[A-Za-z0-9_-]+\s*\Z")
 
 
-def _tool_payload(result: dict[str, Any]) -> dict[str, Any]:
+def _content_payload(result: dict[str, Any]) -> dict[str, Any]:
     if result.get("isError") or result.get("is_error"):
         raise ValueError("Feishu MCP tool returned an error")
     structured = result.get("structuredContent") or result.get("structured_content")
-    if isinstance(structured, dict) and "work_item_attribute" in structured:
+    if isinstance(structured, dict):
         return structured
     blocks = result.get("content")
     if not isinstance(blocks, list) or not blocks:
@@ -40,6 +41,34 @@ def _tool_payload(result: dict[str, Any]) -> dict[str, Any]:
         if isinstance(payload, dict):
             return payload
     raise ValueError("Feishu MCP tool returned invalid JSON")
+
+
+def _tool_payload(result: dict[str, Any]) -> dict[str, Any]:
+    payload = _content_payload(result)
+    if "work_item_attribute" not in payload:
+        raise ValueError("Feishu MCP tool returned no work item")
+    return payload
+
+
+def parse_mcp_comments_result(ref: WorkItemRef, result: dict[str, Any]) -> list[dict[str, Any]]:
+    """Normalize comment pages while retaining identity, time, content, and attachment URL."""
+    parse_bug_url(ref.source_url)
+    payload = _content_payload(result)
+    rows = payload.get("comments")
+    if not isinstance(rows, list):
+        raise ValueError("Feishu MCP comments result has no comment list")
+    comments = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("Invalid Feishu MCP comment")
+        comments.append({
+            "comment_id": str(row.get("comment_id") or ""),
+            "creator": str(row.get("creator") or ""),
+            "created_at": str(row.get("created_at") or ""),
+            "content": str(row.get("content") or ""),
+            "file_url": str(row.get("file_url") or ""),
+        })
+    return comments
 
 
 def parse_mcp_workitem_result(ref: WorkItemRef, result: dict[str, Any]) -> BugSnapshot:
@@ -144,4 +173,29 @@ class FeishuMcpClient:
                     "url": ref.source_url, "fields": ["_all"], "page_size": 100}},
             })
             result = _rpc_result(response, 2)
-        return parse_mcp_workitem_result(ref, result)
+            payload = _tool_payload(result)
+            bug = parse_mcp_workitem_result(ref, result)
+            project = payload.get("work_item_attribute", {}).get("owned_project", {})
+            project_key = project.get("key") if isinstance(project, dict) else None
+            if not isinstance(project_key, str) or not project_key:
+                raise ValueError("Feishu MCP issue has no project key for comment lookup")
+            comments: list[dict[str, Any]] = []
+            page_num = 1
+            while True:
+                response = client.post(MCP_URL, headers=headers, json={
+                    "jsonrpc": "2.0", "id": page_num + 2, "method": "tools/call",
+                    "params": {"name": "list_workitem_comments", "arguments": {
+                        "project_key": project_key, "work_item_id": ref.work_item_id,
+                        "page_num": page_num}},
+                })
+                comment_result = _rpc_result(response, page_num + 2)
+                comment_payload = _content_payload(comment_result)
+                comments.extend(parse_mcp_comments_result(ref, comment_result))
+                pagination = comment_payload.get("pagination", {})
+                total_pages = pagination.get("total_pages", page_num) if isinstance(pagination, dict) else page_num
+                if not isinstance(total_pages, int) or total_pages < page_num or total_pages > 100:
+                    raise ValueError("Invalid Feishu MCP comments pagination")
+                if page_num >= total_pages:
+                    break
+                page_num += 1
+        return replace(bug, comments=comments)

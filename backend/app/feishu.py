@@ -36,6 +36,7 @@ class BugSnapshot:
     updated_at: int | None = None
     fields: dict[str, Any] = field(default_factory=dict)
     status: str | None = None
+    comments: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def source_url(self) -> str:
@@ -56,8 +57,6 @@ def parse_bug_url(url: str) -> WorkItemRef:
         or parts.netloc != _HOST
         or parts.username is not None
         or parts.password is not None
-        or parts.query
-        or parts.fragment
     ):
         raise ValueError("Only the configured Feishu Project issue URL is accepted")
     match = _DETAIL_PATH.fullmatch(parts.path)

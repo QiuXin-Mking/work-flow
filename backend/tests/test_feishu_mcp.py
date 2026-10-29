@@ -15,7 +15,7 @@ REF = WorkItemRef("neptune_software_system", "7128390467")
 def tool_result(*, project="neptune_software_system", item_id="7128390467", description="Repro steps"):
     payload = {
         "work_item_attribute": {
-            "owned_project": {"simple_name": project},
+            "owned_project": {"key": "project-id", "simple_name": project},
             "work_item_id": item_id,
             "work_item_name": "AM cannot save Remarks",
             "work_item_type": {"key": "issue"},
@@ -69,14 +69,25 @@ def test_backend_mcp_client_initializes_then_calls_only_read_tool(tmp_path):
         if body["method"] == "notifications/initialized":
             return httpx.Response(202)
         assert body["method"] == "tools/call"
-        assert body["params"] == {"name": "get_workitem_brief", "arguments": {
-            "url": REF.source_url, "fields": ["_all"], "page_size": 100}}
-        return httpx.Response(200, json={"jsonrpc": "2.0", "id": 2, "result": tool_result()})
+        if body["id"] == 2:
+            assert body["params"] == {"name": "get_workitem_brief", "arguments": {
+                "url": REF.source_url, "fields": ["_all"], "page_size": 100}}
+            result = tool_result()
+        else:
+            assert body["params"] == {"name": "list_workitem_comments", "arguments": {
+                "project_key": "project-id", "work_item_id": REF.work_item_id, "page_num": 1}}
+            result = {"content": [{"type": "text", "text": json.dumps({
+                "comments": [{"comment_id": "comment-1", "creator": "user-1",
+                              "created_at": "2026-10-27 18:49:05", "content": "please test", "file_url": ""}],
+                "pagination": {"page_num": 1, "total_pages": 1}})}]}
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result})
 
     client = FeishuMcpClient(store=store, transport=httpx.MockTransport(respond))
-    assert client.get_bug(REF).title == "AM cannot save Remarks"
+    bug = client.get_bug(REF)
+    assert bug.title == "AM cannot save Remarks"
+    assert bug.comments[0]["content"] == "please test"
     assert [body["method"] for _, body in calls] == [
-        "initialize", "notifications/initialized", "tools/call"]
+        "initialize", "notifications/initialized", "tools/call", "tools/call"]
     assert all(req.url.host == "project.feishu.cn" for req, _ in calls)
     assert calls[2][0].headers["Mcp-Session-Id"] == "session-1"
 
@@ -102,3 +113,28 @@ def test_missing_service_authorization_is_explicit(tmp_path):
     client = FeishuMcpClient(store=OAuthStore(tmp_path / "none.json"))
     with pytest.raises(ValueError, match="MCP authorization"):
         client.get_bug(REF)
+
+
+def test_device_login_reregisters_expired_client(tmp_path):
+    store = OAuthStore(tmp_path / "oauth.json")
+    store.save({"client_id": "old", "client_secret": "expired"})
+    requests = []
+
+    def respond(request):
+        requests.append(request.url.path)
+        if request.url.path.endswith("/device_code"):
+            if b"client_id=old" in request.content:
+                return httpx.Response(200, json={"code": 1000053834,
+                                                 "msg": "Oauth 客户端信息失效，请重新生成"})
+            return httpx.Response(200, json={"device_code": "device", "user_code": "ABCD",
+                                             "verification_uri": "https://project.feishu.cn/verify",
+                                             "expires_in": 600, "interval": 5})
+        assert request.url.path.endswith("/register")
+        return httpx.Response(200, json={"client_id": "fresh", "client_secret": "new"})
+
+    oauth = ServiceOAuth(store=store, transport=httpx.MockTransport(respond))
+    assert oauth.begin_device_login()["user_code"] == "ABCD"
+    assert store.load() == {"client_id": "fresh", "client_secret": "new"}
+    assert requests == ["/goapi/v5/mcp_server/oauth/device_code",
+                        "/mcp_server/oauth/register",
+                        "/goapi/v5/mcp_server/oauth/device_code"]

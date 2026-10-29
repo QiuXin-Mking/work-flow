@@ -1,3 +1,4 @@
+from workflow_helpers import pass_planning
 from fastapi.testclient import TestClient
 
 from app.api import create_app
@@ -23,7 +24,7 @@ def test_login_preview_confirm_shared_job_and_cancel(tmp_path):
     app = create_app(store, FakeFeishu(), {"acme/server": {"project_keys": ["acme"]}})
     alice = TestClient(app)
     bob = TestClient(app)
-    url = "https://project.feishu.cn/acme/issue/detail/123"
+    url = "https://project.feishu.cn/acme/issue/detail/123?openScene=2#detail"
 
     assert alice.get("/api/jobs").status_code == 401
     assert alice.post("/api/login", json={"username": "alice", "password": "secret one"}).status_code == 200
@@ -35,6 +36,7 @@ def test_login_preview_confirm_shared_job_and_cancel(tmp_path):
 
     response = alice.post("/api/jobs", json={"url": url, "repoIds": ["acme/server"]})
     assert response.status_code == 201
+    assert response.json()["url"] == "https://project.feishu.cn/acme/issue/detail/123"
     job_id = response.json()["id"]
     assert bob.get("/api/jobs").json()[0]["id"] == job_id
     assert bob.get(f"/api/jobs/{job_id}").json()["title"] == "登录按钮报错"
@@ -49,7 +51,8 @@ def test_bad_url_and_self_approval_are_rejected(tmp_path):
     client = TestClient(create_app(store, FakeFeishu(), {"acme/server": {"project_keys": ["acme"]}}))
     client.post("/api/login", json={"username": "alice", "password": "secret one"})
     assert client.post("/api/bug-preview", json={"url": "http://127.0.0.1/secret"}).status_code == 422
-    job_id = store.create_job("https://project.feishu.cn/acme/issue/detail/123", ["acme/server"], alice_id)
+    job_id = store.create_job("https://project.feishu.cn/acme/issue/detail/123", ["acme/server"], alice_id, snapshot={"description": "mobi:42 trace-id:t42"})
+    pass_planning(store, job_id)
     candidate_id = store.save_candidate(job_id, {
         "acme/server": {"tree_id": "abc", "target_branch": "main", "target_sha": "def"}
     })

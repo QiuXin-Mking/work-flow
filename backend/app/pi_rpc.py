@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +27,8 @@ class PiRpcSession:
         self._queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._reader: asyncio.Task | None = None
         self._stderr: asyncio.Task | None = None
+        self.stderr_tail = ""
+        self._stopped = False
 
     async def __aenter__(self) -> "PiRpcSession":
         self.process = await asyncio.create_subprocess_exec(
@@ -56,19 +59,26 @@ class PiRpcSession:
 
     async def _drain_stderr(self) -> None:
         assert self.process and self.process.stderr
-        while await self.process.stderr.read(8192):
-            pass
+        while chunk := await self.process.stderr.read(8192):
+            self.stderr_tail = (self.stderr_tail + chunk.decode("utf-8", errors="replace"))[-4000:]
+
+    def _safe_stderr(self) -> str:
+        text = self.stderr_tail
+        for key, value in os.environ.items():
+            if value and any(word in key.upper() for word in ('TOKEN', 'SECRET', 'API_KEY', 'PASSWORD')):
+                text = text.replace(value, '[REDACTED]')
+        return re.sub(r'(?i)(authorization[:=]\s*)[^\r\n]+', r'\1[REDACTED]', text)[-2000:]
 
     async def _send(self, command: dict[str, Any]) -> None:
         assert self.process and self.process.stdin
         self.process.stdin.write((json.dumps(command, ensure_ascii=False) + "\n").encode())
         await self.process.stdin.drain()
 
-    async def prompt(self, text: str, *, timeout: float = 1800) -> PromptResult:
+    async def prompt(self, text: str, *, timeout: float = 300) -> PromptResult:
         if self.process is None:
             raise RuntimeError("Pi session is not running")
         request_id = uuid.uuid4().hex
-        await self._send({"id": request_id, "type": "prompt", "message": text})
+        deadline = asyncio.get_running_loop().time() + timeout
         events: list[dict[str, Any]] = []
         accepted = False
 
@@ -77,7 +87,7 @@ class PiRpcSession:
             while True:
                 event = await self._queue.get()
                 if event.get("type") == "rpc_eof":
-                    raise RuntimeError("Pi RPC exited before agent_settled")
+                    raise RuntimeError("Pi RPC exited before agent_settled; " + self._safe_stderr())
                 if event.get("type") == "rpc_error":
                     raise RuntimeError(event.get("error", "Pi RPC error"))
                 if event.get("id") == request_id and event.get("type") == "response":
@@ -93,26 +103,48 @@ class PiRpcSession:
                     return PromptResult(True, True, events)
 
         try:
-            return await asyncio.wait_for(receive(), timeout)
+            await asyncio.wait_for(self._send({"id": request_id, "type": "prompt", "message": text}), timeout)
+            remaining = max(0, deadline - asyncio.get_running_loop().time())
+            return await asyncio.wait_for(receive(), remaining)
         except TimeoutError:
             await self.stop()
             raise
 
     async def stop(self) -> None:
+        if self._stopped:
+            return
+        try:
+            await asyncio.wait_for(self._stop(), 3)
+        except TimeoutError:
+            if self.process and self.process.returncode is None:
+                try:
+                    self.process.kill()
+                except ProcessLookupError:
+                    pass
+            for task in (self._reader, self._stderr):
+                if task:
+                    task.cancel()
+        finally:
+            self._stopped = True
+
+    async def _stop(self) -> None:
         if self.process is None:
             return
         if self.process.returncode is None:
             try:
-                await self._send({"id": uuid.uuid4().hex, "type": "abort"})
+                await asyncio.wait_for(self._send({"id": uuid.uuid4().hex, "type": "abort"}), 0.25)
                 await asyncio.wait_for(self.process.wait(), 0.25)
             except (TimeoutError, BrokenPipeError, ConnectionResetError):
-                self.process.kill()
+                try:
+                    self.process.kill()
+                except ProcessLookupError:
+                    pass
                 await self.process.wait()
         if self.process.stdin and not self.process.stdin.is_closing():
             self.process.stdin.close()
             try:
-                await self.process.stdin.wait_closed()
-            except (BrokenPipeError, ConnectionResetError):
+                await asyncio.wait_for(self.process.stdin.wait_closed(), 0.5)
+            except (TimeoutError, BrokenPipeError, ConnectionResetError):
                 pass
         for task in (self._reader, self._stderr):
             if task:

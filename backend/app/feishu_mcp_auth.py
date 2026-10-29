@@ -94,7 +94,7 @@ class ServiceOAuth:
         """Register the service client and request a short-lived device code."""
         data = self.store.load()
         with self._client() as client:
-            if not data.get("client_id"):
+            def register_client() -> dict[str, Any]:
                 response = client.post(REGISTER_URL, json={
                     "client_name": "Pi Bugfix Console",
                     "grant_types": ["urn:ietf:params:oauth:grant-type:device_code", "refresh_token"],
@@ -106,16 +106,26 @@ class ServiceOAuth:
                 client_id = registration.get("client_id")
                 if not isinstance(client_id, str) or not client_id:
                     raise ValueError("Feishu MCP client registration failed")
-                data = {"client_id": client_id}
+                registered = {"client_id": client_id}
                 if isinstance(registration.get("client_secret"), str):
-                    data["client_secret"] = registration["client_secret"]
-                self.store.save(data)
-            form = {"client_id": data["client_id"]}
-            if data.get("client_secret"):
-                form["client_secret"] = data["client_secret"]
-            response = client.post(DEVICE_URL, data=form)
-            response.raise_for_status()
-            challenge = response.json()
+                    registered["client_secret"] = registration["client_secret"]
+                self.store.save(registered)
+                return registered
+
+            def request_code(registered: dict[str, Any]) -> dict[str, Any]:
+                form = {"client_id": registered["client_id"]}
+                if registered.get("client_secret"):
+                    form["client_secret"] = registered["client_secret"]
+                response = client.post(DEVICE_URL, data=form)
+                response.raise_for_status()
+                return response.json()
+
+            if not data.get("client_id"):
+                data = register_client()
+            challenge = request_code(data)
+            if challenge.get("code") == 1000053834:
+                data = register_client()
+                challenge = request_code(data)
         uri = challenge.get("verification_uri") or challenge.get("verification_url")
         if (not isinstance(uri, str) or urlsplit(uri).scheme != "https"
                 or urlsplit(uri).hostname not in {"project.feishu.cn", "www.feishu.cn", "open.feishu.cn"}

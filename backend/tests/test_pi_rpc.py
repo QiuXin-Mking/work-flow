@@ -43,3 +43,17 @@ for line in sys.stdin:
                 assert session.process.returncode is not None
 
     asyncio.run(exercise())
+
+
+def test_rpc_prompt_write_has_same_timeout_budget(tmp_path):
+    fake = tmp_path/'not_reading.py'
+    fake.write_text('import time;time.sleep(60)')
+    async def exercise():
+        import time
+        started=time.monotonic()
+        async with PiRpcSession([sys.executable,str(fake)],cwd=tmp_path) as session:
+            import pytest
+            with pytest.raises(TimeoutError):
+                await session.prompt('x'*8_000_000,timeout=0.1)
+        assert time.monotonic()-started < 5
+    asyncio.run(exercise())

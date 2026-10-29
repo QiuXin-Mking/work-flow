@@ -13,7 +13,7 @@ docker compose exec api python3 -m app.feishu_mcp_auth
 
 仅为兼容旧接入方式，可设 `FEISHU_SOURCE=plugin` 并配置以下三个变量；默认 `FEISHU_SOURCE=mcp` 不需要它们。
 
-`app.feishu.parse_bug_url(url)` 只接受 `https://project.feishu.cn/<project_key>/issue/detail/<数字 ID>`，产出 `WorkItemRef`。服务不会请求粘贴的 URL，而是用校验后的 ID 在固定的 `project.feishu.cn` 调用只读 OpenAPI。HTTP 客户端不跟随重定向，也不使用环境代理。其他租户域名及链接格式需要先核实，再通过显式白名单扩展。
+`app.feishu.parse_bug_url(url)` 接受 `https://project.feishu.cn/<project_key>/issue/detail/<数字 ID>`，也接受飞书在该路径后附加的查询参数与 `#` 片段；解析后只保留项目 key 和工单 ID，生成不含附加参数的规范 URL。服务不会请求粘贴的 URL，而是用校验后的 ID 在固定的 `project.feishu.cn` 调用只读 OpenAPI。HTTP 客户端不跟随重定向，也不使用环境代理。其他租户域名及链接格式需要先核实，再通过显式白名单扩展。
 
 `FeishuClient.get_bug(ref)` 返回 `BugSnapshot(ref, title, description, updated_at, fields)`。服务端配置：
 

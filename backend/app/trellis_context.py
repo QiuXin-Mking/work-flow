@@ -17,7 +17,7 @@ LIBRARY_BY_REPO = {
 
 
 def prepare_trellis_context(root: Path, snapshot: dict[str, Any],
-                            repo_ids: list[str], *, bundle: Path = BUNDLE) -> dict[str, str]:
+                            repo_ids: list[str], *, bundle: Path = BUNDLE, prd: str | None = None) -> dict[str, str]:
     """Write attempt artifacts and return immutable, in-memory stage prompts.
 
     Only reviewed bundle files are promoted to system context. The external Bug
@@ -30,15 +30,13 @@ def prepare_trellis_context(root: Path, snapshot: dict[str, Any],
     (task / "task.json").write_text(json.dumps({
         "id": "bugfix", "status": "in_progress", "repositories": repo_ids,
     }, ensure_ascii=False), encoding="utf-8")
-    (task / "prd.md").write_text(
-        "# Bug snapshot (untrusted source data)\n\n"
-        + json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    (root / "snapshot.json").write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
+    if prd is not None:
+        (task / "prd.md").write_text(prd, encoding="utf-8")
     (task / "implement.md").write_text(
         "# Execution checklist\n\n"
-        "- [ ] Diagnose without editing code; save diagnosis.json.\n"
-        "- [ ] Implement and save manifest.json with one repro command per repository.\n"
+        "- [ ] Check the version-bound root cause, user scope confirmation and dual-reviewed PRD.\n"
+        "- [ ] Implement only in authorized worktrees; save manifest.json for changed repositories.\n"
         "- [ ] Confirm baseline failure and freeze candidate trees.\n"
         "- [ ] Verify in a fresh session; rerun the same commands on candidates.\n"
         "- [ ] Wait for another human to review before PR delivery.\n",

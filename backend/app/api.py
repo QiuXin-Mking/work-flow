@@ -48,6 +48,7 @@ def _snapshot_dict(snapshot: BugSnapshot) -> dict[str, Any]:
         "title": snapshot.title, "description": redact(snapshot.description),
         "updated_at": snapshot.updated_at, "fields": redact(snapshot.fields),
         "status": snapshot.status,
+        "comments": redact(snapshot.comments),
         "source_url": snapshot.source_url,
         "ref": asdict(snapshot.ref),
     }
@@ -83,6 +84,8 @@ def create_app(store: Store, feishu: FeishuClient,
         events = store.get_events(job["id"])
         evidence: dict[str, Any] = {}
         for event in events:
+            if event["kind"] == "retry":
+                evidence.clear()
             if event["kind"] == "evidence":
                 evidence.update(event["payload"])
         repository_rows = []
@@ -152,12 +155,24 @@ def create_app(store: Store, feishu: FeishuClient,
             raise HTTPException(404, "任务不存在")
         return present_job(job)
 
+    @app.post("/api/jobs/{job_id}/retry")
+    def retry_job(job_id: str, user: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        try:
+            retried = store.retry_job(job_id, user["id"])
+        except KeyError as exc:
+            raise HTTPException(404, "任务不存在") from exc
+        except PermissionError as exc:
+            raise HTTPException(403, "只有任务发起人可以重试") from exc
+        if not retried:
+            raise HTTPException(409, "此任务当前状态无法重试")
+        return present_job(store.get_job(job_id))
+
     @app.post("/api/jobs/{job_id}/cancel")
     def cancel_job(job_id: str, user: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
         job = store.get_job(job_id)
         if job is None:
             raise HTTPException(404, "任务不存在")
-        if job["status"] not in ("queued", "running", "needs_input"):
+        if job["status"] not in ("queued", "running", "needs_input", "awaiting_business_confirmation", "awaiting_prd_input"):
             raise HTTPException(409, "此任务无法取消")
         store.set_job_status(job_id, "cancelled")
         store.append_event(job_id, "status", {"message": "任务已取消"})
@@ -186,4 +201,6 @@ def create_app(store: Store, feishu: FeishuClient,
         return StreamingResponse(stream(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
+    from .workflow_api import install_workflow_routes
+    install_workflow_routes(app, store, current_user, present_job, read_bug, _snapshot_dict)
     return app

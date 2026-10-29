@@ -6,3 +6,6 @@ __pycache__/
 frontend/node_modules/
 frontend/dist/
 smoke/
+
+# Deployment-only SSH identity; never commit private keys.
+ssh74/
